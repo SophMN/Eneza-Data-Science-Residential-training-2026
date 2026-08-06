@@ -1,0 +1,292 @@
+---
+title: "Cell type annotation and differential gene expression analysis"
+author: "Project02"
+date: "2026-07-31"
+---
+```{r}
+
+# 1. Install required packages
+
+install.packages("DESeq2")
+
+library(Seurat)
+library(dplyr)
+library(ggrepel)
+library(ggplot2)
+library(here)
+library(DESeq2)
+
+```
+
+```{r}
+#Assign cell type identities to clusters
+crc <- readRDS(here("data/crc.rds"))
+new_cluster_ids <- c("Plasma cells", "CD4+ T cells", "NK/Gamma-delta T cells", 
+                     "Naive B cells", "NK/CD8+ cells", "Epithelial cells", "T cells", 
+                     "B cells", "Macrophages", "Regulatory T cells", "Neutrophils",
+                     "INHBA_SULF1_CAF", "Macrophages", "Epithelial cells", "SPON1_CAF", 
+                     "Mast cells", "INHBA_SULF1_CAF", "Germinal-centre B cells", 
+                     "Epithelial cells", "Endothelial cells", "Cycling cells", 
+                     "Epithelial cells", "Epithelial cells", "Plasma cells", "DPT_CAF", 
+                     "B cells", "Activated T cells", "Plasma cells", 
+                     "Schwann/glial cells","Dendritic cells", "B cells")
+names(new_cluster_ids) <- levels(crc)
+crc <- RenameIdents(crc, new_cluster_ids)
+annotated_umap <- DimPlot(crc, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+annotated_umap
+```
+
+```{r}
+##Pseudobulking for DGEA
+crc$cell_type <- Idents(crc)
+pseudobulk_crc <- AggregateExpression(crc, assays = "RNA", return.seurat = T, group.by = c("sample_id", "condition", "cell_type"))
+head(pseudobulk_crc@meta.data)
+```
+
+```{r}
+#Create a new metadata column
+pseudobulk_crc$cell.type_condition <- paste(pseudobulk_crc$cell_type, pseudobulk_crc$condition, sep = "_")
+
+#Rename the cell identities
+Idents(pseudobulk_crc) <- "cell.type_condition"
+bulk_crc_de <- FindMarkers(object = pseudobulk_crc, 
+                           ident.1 = "Tumor", 
+                           ident.2 = "Normal", 
+                           test.use = "DESeq2")
+```
+
+```{r}
+#Load the data
+pseudobulk_crc <- readRDS("~/residential_training/mini_project/GSE294300/pseudobulk_crc.rds")
+```
+
+```{r}
+##Differential expression analysis of different cell types
+bulk_inhbaCAF_de <- FindMarkers(object = pseudobulk_crc, 
+                                ident.1 = "INHBA-SULF1-CAF_Tumor", 
+                                ident.2 = "INHBA-SULF1-CAF_Normal", 
+                                test.use = "DESeq2")
+head(bulk_inhbaCAF_de, n = 10)
+```
+
+```{r}
+spon1_caf_de <- FindMarkers(object = pseudobulk_crc, 
+                            ident.1 = "SPON1-CAF_Tumor", 
+                            ident.2 = "SPON1-CAF_Normal", 
+                            test.use = "DESeq2")
+head(spon1_caf_de)
+```
+
+```{r}
+dpt_caf_de <- FindMarkers(object = pseudobulk_crc, 
+                          ident.1 = "DPT-CAF_Tumor", 
+                          ident.2 = "DPT-CAF_Normal", 
+                          test.use = "DESeq2")
+head(dpt_caf_de, n = 10)
+```
+
+```{r}
+nkCD8_de <- FindMarkers(object = pseudobulk_crc, 
+                        ident.1 = "NK/CD8+ cells_Tumor", 
+                        ident.2 = "NK/CD8+ cells_Normal", 
+                        test.use = "DESeq2")
+head(nkCD8_de, n = 10)
+```
+
+```{r}
+epithelial_de <- FindMarkers(object = pseudobulk_crc, 
+                             ident.1 = "Epithelial cells_Tumor", 
+                             ident.2 = "Epithelial cells_Normal", 
+                             test.use = "DESeq2")
+head(epithelial_de, n = 10)
+```
+
+```{r}
+schwann_de <- FindMarkers(object = pseudobulk_crc, 
+                          ident.1 = "Schwann/glial cells_Tumor", 
+                          ident.2 = "Schwann/glial cells_Normal", 
+                          test.use = "DESeq2")
+head(schwann_de, n = 10)
+```
+
+```{r}
+#Create a new column for differential expression based on statistical significance and log2FC
+schwann_de <- schwann_de %>%
+    mutate(
+      differential = case_when(
+        avg_log2FC > 1 & p_val_adj < 0.05  ~ "Upregulated",
+        avg_log2FC < -1 & p_val_adj < 0.05 ~ "Downregulated",
+        TRUE                               ~ "Not significant"
+      ),
+
+      # Prevent infinite values when adjusted p-value equals zero
+      minus_log10_padj = -log10(
+        pmax(p_val_adj, .Machine$double.xmin)
+      )
+    )
+
+  table(schwann_de$differential)
+```
+
+### Heatmap for Schwann/glial cells (Tumor vs Normal)
+
+```{r}
+# Select top 10 upregulated genes
+top_up_schwann <- schwann_de %>% 
+  filter(differential == "Upregulated") %>% 
+  dplyr::arrange(desc(avg_log2FC), p_val_adj) %>%
+  dplyr::slice(1:10)
+
+# Select top 10 downregulated genes
+top_down_schwann <- schwann_de %>% 
+  filter(differential == "Downregulated") %>% 
+  dplyr::arrange(avg_log2FC, p_val_adj) %>% 
+  dplyr::slice(1:10)
+
+# Combine UP and DOWN genes into a single dataframe
+top_genes_schwann <- bind_rows(top_up_schwann, top_down_schwann)
+
+# Extract gene names vector (adjust column name if 'Gene' instead of 'X')
+genes_to_plot <- if ("Gene" %in% colnames(top_genes_schwann)) {
+  top_genes_schwann$Gene
+} else {
+  top_genes_schwann$X
+}
+
+
+# Subset Seurat object directly for Schwann cells (Tumor vs Normal)
+schwann_pb_m2 <- subset(
+  pseudobulk_crc, 
+  idents = c("Schwann/glial cells_Tumor", "Schwann/glial cells_Normal")
+)
+
+
+heatmap_schwann_m2 <- DoHeatmap(
+    object = schwann_pb_m2,
+    features = genes_to_plot,
+    group.by = "condition",
+    assay = "RNA",
+    slot = "scale.data",
+    size = 3
+  ) +
+  scale_fill_gradientn(
+    colors = c("#2166AC", "white", "#B2182B")
+  ) +
+  ggtitle("Top DEGs in Schwann/glial cells (Method 2: Primary log2FC Rank)") +
+  theme(
+    axis.text.y = element_text(
+      size = 9,
+      face = "italic"
+    )
+  )
+
+# Display the output
+heatmap_schwann_m2
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# 1. Select the top 10 UP and top 10 DOWN genes (your exact code)
+top_up <- schwann_de %>%
+  filter(
+    differential == "Upregulated",
+    !is.na(p_val_adj)
+  ) %>%
+  arrange(p_val_adj, desc(avg_log2FC)) %>%
+  slice_head(n = 10)
+
+top_down <- schwann_de %>%
+  filter(
+    differential == "Downregulated",
+    !is.na(p_val_adj)
+  ) %>%
+  arrange(p_val_adj, avg_log2FC) %>%
+  slice_head(n = 10)
+
+# Combine into a single vector of 20 top genes
+top_20_genes <- unique(c(top_up$Gene, top_down$Gene))
+```
+
+# 2. Build the Volcano Plot with all genes, labeling ONLY top_20_genes
+```{r}
+volcano_schwann <- ggplot(
+    schwann_de,
+    aes(
+      x = avg_log2FC,
+      y = -log10(p_val_adj),
+      color = differential
+    )
+  ) +
+    geom_point(
+      size = 1.2,
+      alpha = 0.7
+    ) +
+    geom_vline(
+      xintercept = c(-1, 1),
+      linetype = "dashed",
+      color = "grey40"
+    ) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dashed",
+      color = "grey40"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Upregulated" = "#D73027",
+        "Downregulated" = "#2878B5",
+        "Not significant" = "grey75"
+      )
+    ) +
+    # Pass ONLY the top 20 genes subset to geom_text_repel
+    geom_text_repel(
+      data = subset(schwann_de, Gene %in% top_20_genes),
+      aes(label = Gene),
+      size = 3.5,
+      max.overlaps = 20,
+      fontface = "italic"
+    ) +
+    theme_classic(base_size = 12) +
+    labs(
+      title = "Schwann/glial cells: Tumor vs Normal",
+      x = expression("Average log"[2]*" Fold Change"),
+      y = expression("-log"[10]*"(adjusted p-value)"),
+      color = NULL
+    )
+
+volcano_schwann
+```
+
+```{r}
+cluster_proportions <- read.csv(here("data/Cluster_condition_proportions.csv"))
+head(cluster_proportions)
+```
+
+```{r}
+new_cluster_ids <- c("Plasma cells", "CD4+ T cells", "NK/Gamma-delta T cells", 
+                     "Naive B cells", "NK/CD8+ cells", "Epithelial cells", "T cells", 
+                     "B cells", "Macrophages", "Regulatory T cells", "Neutrophils",
+                     "INHBA_SULF1_CAF", "Macrophages", "Epithelial cells", "SPON1_CAF", 
+                     "Mast cells", "INHBA_SULF1_CAF", "Germinal-centre B cells", 
+                     "Epithelial cells", "Endothelial cells", "Cycling cells", 
+                     "Epithelial cells", "Epithelial cells", "Plasma cells", "DPT_CAF", 
+                     "B cells", "Activated T cells", "Plasma cells", 
+                     "Schwann/glial cells","Dendritic cells", "B cells")
+cluster_updated <- cluster_proportions %>% 
+  mutate(cell_type = c("Plasma cells", "T/NK cells", "T/NK cells", "B cells", "T/NK cells", "Epithelial cells", "T/NK cells", "B cells", "Macrophages", "T/NK cells", "Neutrophils","Fibroblasts", "Macrophages", "Epithelial cells", "Fibroblasts", "Mast cells", "Fibroblasts", "B cells", "Epithelial cells", "Endothelial cells", "T/NK cells", "Epithelial cells", "Epithelial cells", "Plasma cells", "Fibroblasts", "B cells", "T/NK cells", "Plasma cells", "Schwann/glial cells","Dendritic cells", "B cells", "Plasma cells", "T/NK cells", "T/NK cells", "B cells", "T/NK cells", "Epithelial cells", "T/NK cells", "B cells", "Macrophages", "T/NK cells", "Neutrophils","Fibroblasts", "Macrophages", "Epithelial cells", "Fibroblasts", "Mast cells", "Fibroblasts", "B cells", "Epithelial cells", "Endothelial cells", "T/NK cells", "Epithelial cells", "Epithelial cells", "Plasma cells", "Fibroblasts", "B cells", "T/NK cells", "Plasma cells", "Schwann/glial cells","Dendritic cells", "B cells"))
+
+```
+
+```{r}
+cell_distribution <- ggplot(data = cluster_updated, aes(x = cell_type, y = Freq, fill = Condition)) +
+  geom_col(position = "fill", width = 0.8) +
+  coord_flip() +
+  scale_fill_manual(values = c("Normal" = "blue", "Tumor" = "red")) +
+  labs(x = "Cell type", y = "Proportion") +
+  theme_classic()
+cell_distribution
+```
+
